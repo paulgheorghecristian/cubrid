@@ -24,6 +24,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/epoll.h>
+
+#define SERVER_PORT 1234
+#define MAX_SIZE 1024
+#define MAX_TRIES 1
+#define MAX_LEN 32
 
 #include "config.h"
 #ifdef HAVE_GETOPT_H
@@ -1011,6 +1021,164 @@ print_admin_version (const char *argv0)
   (*admin_version) (argv0);
 }
 
+ssize_t read_line(int sockfd, void *vptr, ssize_t maxlen) {
+    ssize_t n, rc;
+    char c, *buffer;
+
+    buffer = (char*)vptr;
+
+    for (n = 1; n < maxlen; n++ ) {
+        if ((rc = read(sockfd, &c, 1)) == 1) {
+            *buffer++ = c;
+            if (c == '\n')
+                break;
+        } else if(rc == 0) {
+            if (n == 1)
+                return 0;
+            else
+                break;
+        } else {
+            return -1;
+        }
+    }
+
+    *buffer = 0;
+    return n;
+}
+
+void send_response_and_close(char *response, int sockfd){
+    size_t size = sizeof(response)+1;
+    int offset = 0;
+    ssize_t bytes_sent;
+
+    while(size){
+        bytes_sent = send(sockfd, response+offset, size, 0);
+        offset += bytes_sent;
+        size -= bytes_sent;
+    }
+
+    close(sockfd);
+}
+
+void remove_char(char *str, char c) {
+    char *p = strchr(str, c);
+
+    while (p != NULL) {
+        memmove(p, p + 1, sizeof(char) * strlen(p));
+        p = strchr(p+1, c);
+    }
+}
+
+void split_string(char *str, char *arg_name, char *arg_value, char delim){
+    char *p = strchr(str, delim);
+    strcpy(arg_value, p+1);
+    strncpy(arg_name, str, p-str);
+    arg_name[p-str] = '\0';
+}
+
+void parse_body(char *req, char *cmd, char *args[], int *argc){
+    char *body = req+1;
+    int index = 1;
+
+    char *db_name, *charset;
+
+    db_name = (char*)malloc(MAX_LEN);
+    charset = (char*)malloc(MAX_LEN);
+
+    remove_char(body, '"');
+
+    char *p = strtok(body, ",");
+    while(p != NULL){
+        char arg_name[MAX_LEN], arg_value[MAX_LEN];
+        split_string(p, arg_name, arg_value, ':');
+
+        if(strcmp(arg_name, "task") == 0) {
+            strcpy(cmd, arg_value);
+            args[index] = (char*)malloc(sizeof(char) * strlen(cmd));
+            strcpy(args[index++], arg_value);
+        }else if(strcmp(arg_name, "dbname") == 0) {
+            strcpy(db_name, arg_value);
+        }else if(strcmp(arg_name, "charset") == 0){
+            strcpy(charset, arg_value);
+        }else{
+            args[index] = (char*)malloc(sizeof(char) * strlen(arg_value)+1);
+            strcpy(args[index++], arg_value);
+        }
+        p = strtok(NULL, ",");
+    }
+    args[index++] = db_name;
+    if(strcmp(charset, "") != 0) {
+        args[index++] = charset;
+    }
+    *argc = index;
+}
+
+int run_command(int argc, char *argv[]){
+    int status;
+    DSO_HANDLE library_handle, symbol_handle;
+    UTILITY_FUNCTION loaded_function;
+    int utility_index;
+    const char *library_name;
+    bool is_valid_arg = true;
+
+    if (argc > 1 && strcmp (argv[1], "--version") == 0)
+    {
+        print_admin_version (argv[0]);
+        return EXIT_SUCCESS;
+    }
+
+    if (argc < 2 || util_get_utility_index (&utility_index, argv[1]) != NO_ERROR)
+    {
+        goto print_usage;
+    }
+
+    if (util_parse_argument (&ua_Utility_Map[utility_index], argc - 1, &argv[1]) != NO_ERROR)
+    {
+        is_valid_arg = false;
+        argc = 2;
+    }
+
+    library_name = util_get_library_name (utility_index);
+    status = utility_load_library (&library_handle, library_name);
+    if (status == NO_ERROR)
+    {
+        const char *symbol_name;
+        status = util_get_function_name (&symbol_name, argv[1]);
+        if (status != NO_ERROR)
+        {
+            goto print_usage;
+        }
+
+        status = utility_load_symbol (library_handle, &symbol_handle, symbol_name);
+        if (status == NO_ERROR)
+        {
+            UTIL_FUNCTION_ARG util_func_arg;
+            util_func_arg.arg_map = ua_Utility_Map[utility_index].arg_map;
+            util_func_arg.command_name = ua_Utility_Map[utility_index].utility_name;
+            util_func_arg.argv0 = argv[0];
+            util_func_arg.argv = argv;
+            util_func_arg.valid_arg = is_valid_arg;
+            loaded_function = (UTILITY_FUNCTION) symbol_handle;
+            status = (*loaded_function) (&util_func_arg);
+        }
+        else
+        {
+            utility_load_print_error (stderr);
+            goto error_exit;
+        }
+    }
+    else
+    {
+        utility_load_print_error (stderr);
+        goto error_exit;
+    }
+    return status;
+    print_usage:
+    print_admin_usage (argv[0]);
+    error_exit:
+    return EXIT_FAILURE;
+}
+
 /*
  * main() - a administrator utility's entry point
  *
@@ -1021,69 +1189,92 @@ print_admin_version (const char *argv0)
 int
 main (int argc, char *argv[])
 {
-  int status;
-  DSO_HANDLE library_handle, symbol_handle;
-  UTILITY_FUNCTION loaded_function;
-  int utility_index;
-  const char *library_name;
-  bool is_valid_arg = true;
+    int listen_fd, newsockfd = -1;
+    struct sockaddr_in serv_addr, cli_addr;
+    struct epoll_event ev, ret_ev;
+    int epfd;
+    char command_name[MAX_LEN];
+    char *args[MAX_LEN];
+    int num_args = 0;
 
-  if (argc > 1 && strcmp (argv[1], "--version") == 0)
-    {
-      print_admin_version (argv[0]);
-      return EXIT_SUCCESS;
-    }
+    if(argc == 2 && strcmp(argv[1], "REST") == 0){
+        epfd = epoll_create(1);
+        listen_fd = socket(AF_INET, SOCK_STREAM, 0);
+        int T = 1;
+        setsockopt(listen_fd,SOL_SOCKET,SO_REUSEADDR,&T,sizeof(int));
+        if(listen_fd < 0){
+            fprintf(stderr, "Error opening socket!\n");
+            exit(1);
+        }
 
-  if (argc < 2 || util_get_utility_index (&utility_index, argv[1]) != NO_ERROR)
-    {
-      goto print_usage;
-    }
+        memset((char *) &serv_addr, 0, sizeof(serv_addr));
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_addr.s_addr = INADDR_ANY;
+        serv_addr.sin_port = htons(SERVER_PORT);
 
-  if (util_parse_argument (&ua_Utility_Map[utility_index], argc - 1, &argv[1]) != NO_ERROR)
-    {
-      is_valid_arg = false;
-      argc = 2;
-    }
+        if(bind(listen_fd, (struct sockaddr*)&serv_addr, sizeof(struct sockaddr)) < 0){
+            fprintf(stderr, "Binding failed!\n");
+            exit(1);
+        }
 
-  library_name = util_get_library_name (utility_index);
-  status = utility_load_library (&library_handle, library_name);
-  if (status == NO_ERROR)
-    {
-      const char *symbol_name;
-      status = util_get_function_name (&symbol_name, argv[1]);
-      if (status != NO_ERROR)
-	{
-	  goto print_usage;
-	}
+        listen(listen_fd, 1);
 
-      status = utility_load_symbol (library_handle, &symbol_handle, symbol_name);
-      if (status == NO_ERROR)
-	{
-	  UTIL_FUNCTION_ARG util_func_arg;
-	  util_func_arg.arg_map = ua_Utility_Map[utility_index].arg_map;
-	  util_func_arg.command_name = ua_Utility_Map[utility_index].utility_name;
-	  util_func_arg.argv0 = argv[0];
-	  util_func_arg.argv = argv;
-	  util_func_arg.valid_arg = is_valid_arg;
-	  loaded_function = (UTILITY_FUNCTION) symbol_handle;
-	  status = (*loaded_function) (&util_func_arg);
-	}
-      else
-	{
-	  utility_load_print_error (stderr);
-	  goto error_exit;
-	}
+        ev.data.fd = listen_fd;
+        ev.events = EPOLLIN;
+        epoll_ctl(epfd, EPOLL_CTL_ADD, listen_fd, &ev);
+
+        args[0] = (char*)malloc(1);
+        strcpy(args[0], "");
+        num_args++;
+        while(1){
+            epoll_wait(epfd, &ret_ev, 1, -1);
+
+            if(ret_ev.data.fd == listen_fd && (ret_ev.events & EPOLLIN) != 0){
+                socklen_t clilen = sizeof(cli_addr);
+                if((newsockfd = accept(listen_fd, (struct sockaddr *)&cli_addr, &clilen)) == -1){
+                    fprintf(stderr, "Error accepting a client\n");
+                    exit(1);
+                }else{
+                    ev.data.fd = newsockfd;
+                    ev.events = EPOLLIN;
+                    epoll_ctl(epfd, EPOLL_CTL_ADD, newsockfd, &ev);
+                }
+            }else if(ret_ev.data.fd == newsockfd && (ret_ev.events & EPOLLIN) != 0){
+                char body[MAX_SIZE];
+                char buffer[MAX_SIZE];
+                ssize_t size;
+                do{
+                    read_line(newsockfd, buffer, MAX_SIZE);
+                }while(strcmp(buffer, "\r\n") != 0);
+
+                size = recv(newsockfd, body, MAX_SIZE, 0);
+                body[size-1]='\0';
+                printf("body=%s\n", body);
+                parse_body(body, command_name, args, &num_args);
+
+                int i;
+                for(i = 0; i < num_args; i++){
+                    printf("%d %s\n", i, args[i]);
+                }
+
+                ev.data.fd = newsockfd;
+                ev.events = EPOLLIN;
+                epoll_ctl(epfd, EPOLL_CTL_DEL, newsockfd, &ev);
+
+                int status = run_command(num_args, args);
+
+                if(status != EXIT_FAILURE) {
+                    send_response_and_close("HTTP/1.1 200 OK\r\n", newsockfd);
+                }else{
+                    send_response_and_close("HTTP/1.1 500\r\n", newsockfd);
+                }
+                close(listen_fd);
+                return status;
+            }
+        }
+    }else{
+        return run_command(argc, argv);
     }
-  else
-    {
-      utility_load_print_error (stderr);
-      goto error_exit;
-    }
-  return status;
-print_usage:
-  print_admin_usage (argv[0]);
-error_exit:
-  return EXIT_FAILURE;
 }
 
 /*
@@ -1174,3 +1365,4 @@ util_get_utility_index (int *utility_index, const char *utility_name)
 
   return *utility_index == -1 ? ER_GENERIC_ERROR : NO_ERROR;
 }
+
