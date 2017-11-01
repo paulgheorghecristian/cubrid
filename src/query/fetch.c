@@ -4093,6 +4093,7 @@ fetch_peek_dbval (THREAD_ENTRY * thread_p, REGU_VARIABLE * regu_var, VAL_DESCR *
 	    case F_JSON_OBJECT:
 	    case F_JSON_INSERT:
 	    case F_JSON_REMOVE:
+            case F_JSON_ARRAY_APPEND:
 	    case F_JSON_MERGE:
 	      {
 		REGU_VARIABLE_LIST operand;
@@ -4282,6 +4283,7 @@ fetch_peek_dbval (THREAD_ENTRY * thread_p, REGU_VARIABLE * regu_var, VAL_DESCR *
 	case F_JSON_ARRAY:
 	case F_JSON_INSERT:
 	case F_JSON_REMOVE:
+        case F_JSON_ARRAY_APPEND:
 	case F_JSON_MERGE:
 	  break;
 

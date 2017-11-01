@@ -4034,6 +4034,8 @@ pt_show_function (FUNC_TYPE c)
       return "json_insert";
     case F_JSON_REMOVE:
       return "json_remove";
+    case F_JSON_ARRAY_APPEND:
+      return "json_array_append";
     case F_JSON_MERGE:
       return "json_merge";
     default:
