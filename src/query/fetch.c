@@ -4095,6 +4095,7 @@ fetch_peek_dbval (THREAD_ENTRY * thread_p, REGU_VARIABLE * regu_var, VAL_DESCR *
 	    case F_JSON_REMOVE:
             case F_JSON_ARRAY_APPEND:
 	    case F_JSON_MERGE:
+            case F_JSON_GET_ALL_PATHS:
 	      {
 		REGU_VARIABLE_LIST operand;
 		int error_status = NO_ERROR;
@@ -4285,6 +4286,7 @@ fetch_peek_dbval (THREAD_ENTRY * thread_p, REGU_VARIABLE * regu_var, VAL_DESCR *
 	case F_JSON_REMOVE:
         case F_JSON_ARRAY_APPEND:
 	case F_JSON_MERGE:
+        case F_JSON_GET_ALL_PATHS:
 	  break;
 
 	default:

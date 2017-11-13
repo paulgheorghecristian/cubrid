@@ -12436,7 +12436,8 @@ pt_upd_domain_info (PARSER_CONTEXT * parser, PT_NODE * arg1, PT_NODE * arg2, PT_
       if (node->info.function.function_type == F_ELT || node->info.function.function_type == F_INSERT_SUBSTRING
 	  || node->info.function.function_type == F_JSON_OBJECT || node->info.function.function_type == F_JSON_ARRAY
 	  || node->info.function.function_type == F_JSON_INSERT || node->info.function.function_type == F_JSON_REMOVE
-	  || node->info.function.function_type == F_JSON_MERGE  || node->info.function.function_type == F_JSON_ARRAY_APPEND)
+	  || node->info.function.function_type == F_JSON_MERGE  || node->info.function.function_type == F_JSON_ARRAY_APPEND
+          || node->info.function.function_type == F_JSON_GET_ALL_PATHS)
 	{
 	  assert (dt == NULL);
 	  dt = pt_make_prim_data_type (parser, node->type_enum);
@@ -13561,6 +13562,32 @@ pt_eval_function_type (PARSER_CONTEXT * parser, PT_NODE * node)
       }
       break;
 
+    case F_JSON_GET_ALL_PATHS:
+    {
+      PT_TYPE_ENUM supported_json_type[] = { PT_TYPE_CHAR, PT_TYPE_JSON, PT_TYPE_NULL, PT_TYPE_MAYBE };
+      PT_TYPE_ENUM unsupported_type;
+      unsigned int num_bad = 0, i, found_supported = 0;
+      unsigned int supported_json_types_len = sizeof(supported_json_type) / sizeof(supported_json_type[0]);
+      PT_NODE *arg = arg_list;
+
+      for (i = 0; i < supported_json_types_len; i++)
+      {
+        if (arg->type_enum == supported_json_type[i])
+        {
+          found_supported = 1;
+          break;
+        }
+      }
+
+      if (!found_supported)
+      {
+        arg_type = PT_TYPE_NONE;
+        PT_ERRORmf2(parser, node, MSGCAT_SET_PARSER_SEMANTIC, MSGCAT_SEMANTIC_FUNC_NOT_DEFINED_ON,
+          pt_show_function(fcode), pt_show_type_enum(arg->type_enum));
+      }
+    }
+    break;
+
     case F_ELT:
       {
 	/* all types used in the arguments list */
@@ -13892,6 +13919,7 @@ pt_eval_function_type (PARSER_CONTEXT * parser, PT_NODE * node)
 	case F_JSON_REMOVE:
         case F_JSON_ARRAY_APPEND:
 	case F_JSON_MERGE:
+        case F_JSON_GET_ALL_PATHS:
 	  node->type_enum = PT_TYPE_JSON;
 	  break;
 	case PT_MEDIAN:
@@ -20782,6 +20810,14 @@ pt_evaluate_function_w_args (PARSER_CONTEXT * parser, FUNC_TYPE fcode, DB_VALUE 
 	  PT_ERRORc (parser, NULL, er_msg ());
 	  return 0;
 	}
+      break;
+    case F_JSON_GET_ALL_PATHS:
+      error = db_json_get_all_paths (result, args, num_args);
+      if (error != NO_ERROR)
+      {
+        PT_ERRORc(parser, NULL, er_msg());
+        return 0;
+      }
       break;
     default:
       /* a supported function doesn't have const folding code */

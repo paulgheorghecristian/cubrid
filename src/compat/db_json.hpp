@@ -37,6 +37,12 @@ typedef void JSON_VALIDATOR;
 #if defined (__cplusplus)
 
 #include <functional>
+#include <sstream>
+#include <vector>
+#include <unordered_map>
+#include <algorithm> 
+#include <cctype>
+#include <locale>
 #include "thread.h"
 
 enum DB_JSON_TYPE
@@ -74,10 +80,13 @@ int db_json_get_json_from_str (const char *json_raw, JSON_DOC *&doc);
 JSON_DOC *db_json_get_copy_of_doc (const JSON_DOC *doc);
 void db_json_copy_doc (JSON_DOC *dest, const JSON_DOC *src);
 
+int db_json_convert_rapidjsonpath_to_mysqlpath (char *raw_path, const JSON_DOC &doc, std::string &converted_path);
+int db_json_convert_mysqlpath_to_rapidjsonpath (char *raw_path, const JSON_DOC &doc, std::string &converted_path);
 int db_json_insert_func (const JSON_DOC *value, JSON_DOC *doc, char *raw_path);
 int db_json_array_append_func (const JSON_DOC *value, JSON_DOC *doc, char *raw_path);
 int db_json_remove_func (JSON_DOC *doc, char *raw_path);
 int db_json_merge_func (const JSON_DOC *source, JSON_DOC *dest);
+int db_json_get_all_paths_func (const JSON_DOC &doc, JSON_DOC *&result_json);
 
 void db_json_merge_two_json_objects (JSON_DOC *obj1, const JSON_DOC *obj2);
 void db_json_merge_two_json_arrays (JSON_DOC *array1, const JSON_DOC *array2);
