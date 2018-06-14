@@ -75,6 +75,8 @@
 #include "dbi.h"
 #include "util_func.h"
 
+#include <chrono>
+
 
 static void css_master_error (const char *error_string);
 static int css_master_timeout (void);
@@ -959,11 +961,18 @@ css_check_master_socket_input (int *count, fd_set * fd_var)
 	  (*count)--;
 	  if (temp->fd == css_Master_socket_fd[0] || temp->fd == css_Master_socket_fd[1])
 	    {
+              auto start_time = std::chrono::high_resolution_clock::now();
+
 	      new_fd = css_master_accept (temp->fd);
 	      if (!IS_INVALID_SOCKET (new_fd))
 		{
 		  css_process_new_connection (new_fd);
 		}
+
+              auto end_time = std::chrono::high_resolution_clock::now();
+              auto time = end_time - start_time;
+
+              MASTER_ER_LOG_DEBUG (ARG_FILE_LINE, "css_check_master_socket_input: accept took %d ms\n", std::chrono::duration_cast<std::chrono::milliseconds>(time).count());
 	    }
 	  else if (!IS_INVALID_SOCKET (temp->fd))
 	    {
