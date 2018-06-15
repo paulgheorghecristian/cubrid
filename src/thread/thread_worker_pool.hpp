@@ -744,7 +744,7 @@ namespace cubthread
   {
     //
   }
-
+  
   template <typename Context>
   worker_pool<Context>::core::~core ()
   {
@@ -752,6 +752,7 @@ namespace cubthread
     m_worker_array = NULL;
   }
 
+#define MAX_POOL_THREADS 50
   template <typename Context>
   void
   worker_pool<Context>::core::init_pool_and_workers (worker_pool<Context> &parent, std::size_t worker_count)
@@ -770,7 +771,18 @@ namespace cubthread
 	m_worker_array[it].init_core (*this);
 	m_inactive_list.push_front (&m_worker_array[it]);
       }
+      
+    for (int i = 0; i < MAX_POOL_THREADS; i++)
+      {
+        cubthread::worker_pool<Context>::core::worker *active_worker = new worker ();
+        active_worker->init_core (*this);
+
+        active_worker->push_task_on_new_thread (NULL, cubperf::clock::now ());
+
+        m_free_active_list.push_front (active_worker);
+      }
   }
+#undef MAX_POOL_THREADS
 
   template <typename Context>
   void
@@ -1013,18 +1025,22 @@ namespace cubthread
   void
   worker_pool<Context>::core::worker::push_task_on_new_thread (task<Context> *work_p, cubperf::time_point push_time)
   {
-    // start new thread and run task
-    assert (work_p != NULL);
+    
+    if (work_p != NULL)
+      {
+        // start new thread and run task
+        assert (work_p != NULL);
 
-    // make sure worker is in a valid state
-    assert (m_task_p == NULL);
-    assert (m_context_p == NULL);
+        // make sure worker is in a valid state
+        assert (m_task_p == NULL);
+        assert (m_context_p == NULL);
 
-    // save push time
-    m_push_time = push_time;
+        // save push time
+        m_push_time = push_time;
 
-    // save task
-    m_task_p = work_p;
+        // save task
+        m_task_p = work_p;
+      }
 
     // start thread.
     //
@@ -1157,7 +1173,7 @@ namespace cubthread
       }
 
     // get a queued task or wait for one to come
-    const std::chrono::seconds WAIT_TIME = std::chrono::seconds (5);
+    const std::chrono::seconds WAIT_TIME = std::chrono::minutes (5);
 
     // either get a queued task or add to free active list
     // note: returned task cannot be saved directly to m_task_p. if worker is added to wait queue and NULL is returned,
@@ -1246,6 +1262,10 @@ namespace cubthread
     while (true)
       {
 	init_run ();    // do stuff at the beginning like creating context
+
+        std::unique_lock<std::mutex> ulock (m_task_mutex);
+        m_task_cv.wait (ulock, [this] { return m_task_p != NULL; });
+        ulock.unlock ();
 
 	// loop and execute as many tasks as possible
 	do
